@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Concurrent;
+using System.Data;
 using System.Data.SqlClient;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -6,18 +8,20 @@ using System.Text.RegularExpressions;
 class Password
 {
     const string availableChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~!@#$%^&*()-_=+<,>.";
-    static List<string> passList= new List<string>();
+    //static List<string> passList= new List<string>();
+    static ConcurrentDictionary<int, string> passList= new ConcurrentDictionary<int, string>();
+    static int dictIndex = 0;
     const string smalls = "abcdefghijklmnopqrstuvwxyz";
     const string capitals = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const string numbers = "0123456789";
-    const string specials = "~!@#$%^&*()-_=+<,>.";
+    const string specials = "~&*()-_=+<!@#$%^,>.";
     const string passRegex = @"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\da-zA-Z]).{20,20}$";
-    static int recCount = 0;
+    
     int count = 0;
     static string connectionString;
     static SqlConnection cnn;
     static int current = 0;
-    static int total = 1000000;
+    static int total = 100000;
     static string  PasswordGenerator(ref Random random,ref StringBuilder result)
     {
         result.Clear();
@@ -25,14 +29,16 @@ class Password
         int total_number = random.Next(2, 5);
         int total_smalls = random.Next(2, 5);
         int total_capital = 20 - total_smalls - total_number - total_special;
-        for(int i=0;i<total_capital;i++)
-        {
-            result.Append(capitals[random.Next(capitals.Length)]);
-        }
-        for(int i=0;i<total_special;i++)
+
+        for (int i = 0; i < total_special; i++)
         {
             result.Append(specials[random.Next(specials.Length)]);
         }
+        for (int i=0;i<total_capital;i++)
+        {
+            result.Append(capitals[random.Next(capitals.Length)]);
+        }
+      
         for(int i=0;i<total_number;i++)
         {
             result.Append(numbers[random.Next(numbers.Length)]);
@@ -103,7 +109,7 @@ class Password
         }
         else
         {
-            recCount++;
+            
 
             Console.WriteLine("Recursive call");
             Console.WriteLine(res.ToString());
@@ -137,22 +143,24 @@ class Password
     }
     static async Task<int> AddDataToDB()
     {
-        await Task.Delay(5000);
+        string password;
         while(current==passList.Count || passList.Count==0)
         {
 
         }
         while(current<passList.Count)
         {
-            Random random = new Random();
-            StringBuilder sb = new StringBuilder();
             string query = "Insert Into PasswordTable (password) VALUES (@pass)";
             SqlCommand cmd = new SqlCommand(query, cnn);
-            cmd.Parameters.AddWithValue("@pass", passList[current++]);
+            //cmd.Parameters.AddWithValue("@pass", passList[current++]);
+            passList.TryGetValue(current, out password);
+            cmd.Parameters.AddWithValue("@pass", password);
             //cmd.Parameters.AddWithValue("@pass", this.PasswordGenerator(ref random, ref sb));
             try
             {
+                await cnn.OpenAsync();
                 cmd.ExecuteNonQuery();
+
             }
             catch (SqlException ex)
             {
@@ -163,19 +171,170 @@ class Password
             }
             finally
             {
+                current++;
+                await cnn.CloseAsync();
                 Console.WriteLine(current);
             }
         }
         
         return 0;
     }
+    static async Task<int> AddDataToDB2()
+    {
+        string password;
+        DataTable dataTable= new DataTable();
+        dataTable.Columns.Add(new DataColumn("password",typeof(string)));
+        SqlBulkCopy copy = new SqlBulkCopy(cnn);
+        copy.DestinationTableName = "[dbo].[PasswordTable]";
+        copy.ColumnMappings.Add("password", "password");
+        await Task.Delay(100);
+        while(current==passList.Count || passList.Count==0)
+        {
+
+        }
+        while(current<passList.Count)
+        {
+           
+            DataRow row= dataTable.NewRow();
+            //Console.WriteLine(passList.TryGetValue(current++, out password));
+            //row[0] = password;
+            row["password"] = passList[current++];
+            dataTable.Rows.Add(row);
+            try
+            {
+                await cnn.OpenAsync();
+                copy.WriteToServer(dataTable);
+                
+            }
+            catch (SqlException ex)
+            {
+                if (ex.Number == 2627)
+                {
+                    AddDataToDB2();
+                }
+            }
+            finally
+            {
+                Console.WriteLine(current);
+                await cnn.CloseAsync();
+            }
+        }
+        
+        return 0;
+    }
+
+    static async Task<int> AddDataToDB3()
+    {
+        await Task.Delay(100);
+        Random random= new Random();
+        StringBuilder sb= new StringBuilder();
+        DataTable dataTable = new DataTable();
+        dataTable.Columns.Add(new DataColumn("password", typeof(string)));
+        string password;
+        while (current == passList.Count || passList.Count == 0)
+        {
+
+        }
+        while (current < passList.Count)
+        {
+            dataTable.Clear();
+            DataRow row = dataTable.NewRow();
+            passList.TryGetValue(current++, out password);
+            row[0] = password;
+            dataTable.Rows.Add(row);
+            //row[0] = PasswordGenerator(ref random, ref sb);
+            try
+            {
+                cnn.OpenAsync();
+                using(SqlCommand cmd = new SqlCommand("AddPassword", cnn))
+                {
+                    cmd.CommandType = CommandType.StoredProcedure;
+                    
+                    
+                    cmd.Parameters.Add(new SqlParameter("@data", SqlDbType.Structured ) { Value = dataTable });   
+                    cmd.ExecuteNonQuery();
+                    current++;
+                }
+            }
+            catch (SqlException ex)
+            {
+                if (ex.Number == 2627)
+                {
+                    total += 1;
+                    AddDataToDB3();
+                }
+            }
+            finally
+            {
+                cnn.CloseAsync();
+                Console.WriteLine(current);
+            }
+        }
+
+        return 0;
+    }
+    static async Task<int> AddDataToDB4()
+    {
+        await Task.Delay(100);
+        Random random = new Random();
+        StringBuilder sb = new StringBuilder();
+        DataTable dataTable = new DataTable();
+        dataTable.Columns.Add(new DataColumn("password", typeof(string)));
+        string password;
+        SqlCommand cmd=cnn.CreateCommand();
+        cmd.CommandText = "Execute PasswordTable @pass";
+        while (current == passList.Count || passList.Count == 0)
+        {
+
+        }
+        while (current < passList.Count)
+        {
+            dataTable.Clear();
+            DataRow row = dataTable.NewRow();
+            passList.TryGetValue(current++, out password);
+            //row[0] = password;
+            //dataTable.Rows.Add(row);
+            //row[0] = PasswordGenerator(ref random, ref sb);
+            try
+            {
+                await cnn.OpenAsync();
+                cmd.Parameters.Add("@pass",SqlDbType.VarChar,50).Value = password;
+                cmd.ExecuteNonQuery();
+                //using (SqlCommand cmd = new SqlCommand("AddPass", cnn))
+                //{
+                //    cmd.CommandType = CommandType.StoredProcedure;
+
+
+                //    cmd.Parameters.Add(new SqlParameter("@pass", SqlDbType.VarChar,50) { Value = password });
+                //    cmd.ExecuteNonQuery();
+                //    current++;
+                //}
+            }
+            catch (SqlException ex)
+            {
+                if (ex.Number == 2627)
+                {
+                    total += 1;
+                    AddDataToDB3();
+                }
+            }
+            finally
+            {
+                await cnn.CloseAsync();
+                Console.WriteLine(current);
+            }
+        }
+
+        return 0;
+    }
+
     static async Task<int> AddDataToList()
     {
         Random random= new Random();
         StringBuilder sb = new StringBuilder();
         for(int i=0;i<total;i++)
         {
-            passList.Add(PasswordGenerator(ref random, ref sb));
+            passList.TryAdd(dictIndex++,PasswordGenerator(ref random, ref sb));
         }
         return 0;
     }
@@ -183,13 +342,12 @@ class Password
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         DBConnect();
-        cnn.Open();
+        //cnn.Open();
         Random random = new Random();
         Password passobj = new Password();
         StringBuilder sb = new StringBuilder();
         Task listTask=AddDataToList();
-        Task DBTask = AddDataToDB();
-        
+        Task DBTask = AddDataToDB3();
 
         //Task listTask = new Task(async()=>await AddDataToList());
         //Task DBTask = new Task(async() =>
@@ -200,10 +358,10 @@ class Password
         //});
         //listTask.Start();
         //DBTask.Start();
+        Console.WriteLine(passList.Count);
         await Task.WhenAll(listTask, DBTask);
-        cnn.Close() ;
-        Console.WriteLine("Total number of Recursion needed: "+recCount);
-
+        //cnn.Close() ;
+        
         watch.Stop();
         var elapsedMs = watch.ElapsedMilliseconds;
         Console.WriteLine($"{elapsedMs/1000} seconds");
